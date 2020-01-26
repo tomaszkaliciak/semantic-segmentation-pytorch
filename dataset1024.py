@@ -4,7 +4,7 @@ import torch
 from torchvision import transforms
 import numpy as np
 from PIL import Image
-
+import PIL
 
 def imresize(im, size, interp='bilinear'):
     if interp == 'nearest':
@@ -36,8 +36,8 @@ class BaseDataset(torch.utils.data.Dataset):
             std=[0.229, 0.224, 0.225])
 
         self.valid_classes = [
-            24,
-            7, 13, 14, 43,
+            24, 7,
+            13, 14, 43,
             8, 11, 15, 23,
             19, 20, 21, 22,
             52, 54, 55, 56, 57, 58, 59, 60, 61
@@ -137,37 +137,19 @@ class TrainDataset(BaseDataset):
         batch_records = self._get_sub_batch()
 
         # resize all images' short edges to the chosen size
-        if isinstance(self.imgSizes, list) or isinstance(self.imgSizes, tuple):
-            this_short_size = np.random.randint(min(self.imgSizes), max(self.imgSizes)+1)
-        else:
-            this_short_size = self.imgSizes
-
+        # if isinstance(self.imgSizes, list) or isinstance(self.imgSizes, tuple):
+        #     this_short_size = np.random.randint(min(self.imgSizes), max(self.imgSizes)+1)
+        # else:
+        #     this_short_size = self.imgSizes
         # calculate the BATCH's height and width
         # since we concat more than one samples, the batch's h and w shall be larger than EACH sample
-        batch_widths = np.zeros(self.batch_per_gpu, np.int32)
-        batch_heights = np.zeros(self.batch_per_gpu, np.int32)
-        for i in range(self.batch_per_gpu):
-            img_height, img_width = batch_records[i]['height'], batch_records[i]['width']
-            this_scale = min(
-                this_short_size / min(img_height, img_width), \
-                self.imgMaxSize / max(img_height, img_width))
-            batch_widths[i] = img_width * this_scale
-            batch_heights[i] = img_height * this_scale
 
-        # Here we must pad both input image and segmentation map to size h' and w' so that p | h' and p | w'
-        batch_width = np.max(batch_widths)
-        batch_height = np.max(batch_heights)
-        batch_width = int(self.round2nearest_multiple(batch_width, self.padding_constant))
-        batch_height = int(self.round2nearest_multiple(batch_height, self.padding_constant))
-
-        assert self.padding_constant >= self.segm_downsampling_rate, \
-            'padding constant must be equal or large than segm downsamping rate'
         batch_images = torch.zeros(
-            self.batch_per_gpu, 3, batch_height, batch_width)
+            self.batch_per_gpu, 3, 576, 1024)
         batch_segms = torch.zeros(
             self.batch_per_gpu,
-            batch_height // self.segm_downsampling_rate,
-            batch_width // self.segm_downsampling_rate).long()
+            576//self.segm_downsampling_rate,
+            1024//self.segm_downsampling_rate).long()
 
         for i in range(self.batch_per_gpu):
             this_record = batch_records[i]
@@ -186,11 +168,19 @@ class TrainDataset(BaseDataset):
                 img = img.transpose(Image.FLIP_LEFT_RIGHT)
                 segm = segm.transpose(Image.FLIP_LEFT_RIGHT)
 
-            # note that each sample within a mini batch has different scale param
-            img = imresize(img, (batch_widths[i], batch_heights[i]), interp='bilinear')
-            segm = imresize(segm, (batch_widths[i], batch_heights[i]), interp='nearest')
 
-            # further downsample seg label, need to avoid seg label misalignment
+            scaleIndex = np.random.randint(0,7)
+            newW = 1024
+            newH = 576
+
+            img = imresize(img, (newW, newH), interp='bilinear')
+            segm = imresize(segm, (newW, newH), interp='nearest')
+            new_w = 0
+            new_h = 0
+            
+            img = img.crop((new_w, new_h, new_w + 1024, new_h + 576))
+            segm = segm.crop((new_w, new_h, new_w + 1024, new_h + 576))
+
             segm_rounded_width = self.round2nearest_multiple(segm.size[0], self.segm_downsampling_rate)
             segm_rounded_height = self.round2nearest_multiple(segm.size[1], self.segm_downsampling_rate)
             segm_rounded = Image.new(segm.mode, (segm_rounded_width, segm_rounded_height), 5)
@@ -200,13 +190,13 @@ class TrainDataset(BaseDataset):
                 (segm_rounded.size[0] // self.segm_downsampling_rate, \
                  segm_rounded.size[1] // self.segm_downsampling_rate), \
                 interp='nearest')
+        
 
             # image transform, to torch float tensor 3xHxW
             img = self.img_transform(img)
 
             # segm transform, to torch long tensor HxW
             segm = self.segm_transform(segm)
-
             # put into batch arrays
             batch_images[i][:, :img.shape[1], :img.shape[2]] = img
             batch_segms[i][:segm.shape[0], :segm.shape[1]] = segm
@@ -219,7 +209,6 @@ class TrainDataset(BaseDataset):
     def __len__(self):
         return int(1e10) # It's a fake length due to the trick that every loader maintains its own list
         #return self.num_sampleclass
-
 
 
 def mapToMainClass(mapillaryId):
@@ -254,22 +243,23 @@ class ValDataset(BaseDataset):
 
         ori_width, ori_height = img.size
 
+        img = imresize(img, (1024, 576), interp='bilinear')
+        segm = imresize(segm, (1024, 576), interp='nearest')
+        newsize(576, 1024)
         img_resized_list = []
         for this_short_size in self.imgSizes:
             # calculate target height and width
-            scale = min(this_short_size / float(min(ori_height, ori_width)),
-                        self.imgMaxSize / float(max(ori_height, ori_width)))
-            target_height, target_width = int(ori_height * scale), int(ori_width * scale)
+            scale1= newsize[0]/ori_height
+            scale2= newsize[1]/ori_width
+            target_height, target_width = int(ori_height * scale1), int(ori_width * scale2)
 
             # to avoid rounding in network
             target_width = self.round2nearest_multiple(target_width, self.padding_constant)
             target_height = self.round2nearest_multiple(target_height, self.padding_constant)
 
             # resize images
-            img_resized = imresize(img, (target_width, target_height), interp='bilinear')
-
             # image transform, to torch float tensor 3xHxW
-            img_resized = self.img_transform(img_resized)
+            img_resized = self.img_transform(img)
             img_resized = torch.unsqueeze(img_resized, 0)
             img_resized_list.append(img_resized)
 
@@ -300,12 +290,25 @@ class TestDataset(BaseDataset):
 
         ori_width, ori_height = img.size
 
+    def __getitem__(self, index):
+        this_record = self.list_sample[index]
+        # load image and label
+        image_path = os.path.join(self.root_dataset, this_record['fpath_img'])
+        segm_path = os.path.join(self.root_dataset, this_record['fpath_segm'])
+        img = Image.open(image_path).convert('RGB')
+        segm = Image.open(segm_path)
+
+        assert(img.size[0] == segm.size[0])
+        assert(img.size[1] == segm.size[1])
+
+        ori_width, ori_height = img.size
+
         img_resized_list = []
         for this_short_size in self.imgSizes:
             # calculate target height and width
-            scale = min(this_short_size / float(min(ori_height, ori_width)),
-                        self.imgMaxSize / float(max(ori_height, ori_width)))
-            target_height, target_width = int(ori_height * scale), int(ori_width * scale)
+            scale1= newsize[0]/ori_height
+            scale2= newsize[0]/ori_width
+            target_height, target_width = int(ori_height * scale1), int(ori_width * scale2)
 
             # to avoid rounding in network
             target_width = self.round2nearest_multiple(target_width, self.padding_constant)
@@ -318,6 +321,17 @@ class TestDataset(BaseDataset):
             img_resized = self.img_transform(img_resized)
             img_resized = torch.unsqueeze(img_resized, 0)
             img_resized_list.append(img_resized)
+
+        # segm transform, to torch long tensor HxW
+        segm = self.segm_transform(segm)
+        batch_segms = torch.unsqueeze(segm, 0)
+
+        output = dict()
+        output['img_ori'] = np.array(img)
+        output['img_data'] = [x.contiguous() for x in img_resized_list]
+        output['seg_label'] = batch_segms.contiguous()
+        output['info'] = this_record['fpath_img']
+        return output
 
         output = dict()
         output['img_ori'] = np.array(img)

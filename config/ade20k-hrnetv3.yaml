@@ -15,13 +15,13 @@ MODEL:
   fc_dim: 720
 
 TRAIN:
-  batch_size_per_gpu: 2
+  batch_size_per_gpu: 3
   num_epoch: 30
   start_epoch: 21
-  epoch_iters: 13000
+  epoch_iters: 6500
   optim: "SGD"
-  lr_encoder: 0.01
-  lr_decoder: 0.01
+  lr_encoder: 0.001
+  lr_decoder: 0.001
   lr_pow: 0.9
   beta1: 0.9
   weight_decay: 1e-4
@@ -33,10 +33,10 @@ TRAIN:
 
 VAL:
   visualize: False
-  checkpoint: "epoch_22.pth"
+  checkpoint: "epoch_27.pth"
 
 TEST:
   checkpoint: "epoch_22.pth"
   result: "./"
 
-DIR: "ckpt/ade20k-hrnetv2-c1"
+DIR: "ckpt/ade20k-hrnetv2-NOWEKLASY"

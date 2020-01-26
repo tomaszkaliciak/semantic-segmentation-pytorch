@@ -225,9 +225,9 @@ class TrainDataset(BaseDataset):
 def mapToMainClass(mapillaryId):
     if mapillaryId in [24]:
         return 0
-    elif mapillaryId in [7, 13, 14, 43]:
+    elif mapillaryId in [13, 14, 43]:
         return 1
-    elif mapillaryId in [8, 11, 15, 23]:
+    elif mapillaryId in [7, 8, 11, 15, 23]:
         return 2
     elif mapillaryId in [19, 20, 21, 22, 59]:
         return 3

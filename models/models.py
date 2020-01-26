@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
 import torchvision
-from . import resnet, resnext, mobilenet, hrnet
+from . import resnet, resnext, mobilenet, hrnet, shufflenetv2
 from lib.nn import SynchronizedBatchNorm2d
 BatchNorm2d = SynchronizedBatchNorm2d
+import torch.nn.functional as F
+from math import log2
 
 
 class SegmentationModuleBase(nn.Module):
@@ -29,6 +31,15 @@ class SegmentationModule(SegmentationModuleBase):
 
     def forward(self, feed_dict, *, segSize=None):
         # training
+        
+        if type(feed_dict) is list:
+            feed_dict = feed_dict[0]
+            # also, convert to torch.cuda.FloatTensor
+            if torch.cuda.is_available():
+                feed_dict['img_data'] = feed_dict['img_data'].cuda()
+                feed_dict['seg_label'] = feed_dict['seg_label'].cuda()
+            else:
+                raise RunTimeError('Cannot convert torch.Floattensor into torch.cuda.FloatTensor')
         if segSize is None:
             if self.deep_sup_scale is not None: # use deep supervision technique
                 (pred, pred_deepsup) = self.decoder(self.encoder(feed_dict['img_data'], return_feature_maps=True))
@@ -53,7 +64,7 @@ class ModelBuilder:
     @staticmethod
     def weights_init(m):
         classname = m.__class__.__name__
-        if classname.find('Conv') != -1:
+        if classname.find('Conv') != -1 and classname.find('_BNReluConv') == -1:
             nn.init.kaiming_normal_(m.weight.data)
         elif classname.find('BatchNorm') != -1:
             m.weight.data.fill_(1.)
@@ -100,7 +111,8 @@ class ModelBuilder:
         elif arch == 'hrnetv2':
             net_encoder = hrnet.__dict__['hrnetv2'](pretrained=pretrained)
         else:
-            raise Exception('Architecture undefined!')
+            net_encoder = shufflenetv2.__dict__['shufflenetv2'](pretrained=pretrained)
+
 
         # encoders are usually pretrained
         # net_encoder.apply(ModelBuilder.weights_init)
@@ -148,7 +160,9 @@ class ModelBuilder:
                 use_softmax=use_softmax,
                 fpn_dim=512)
         else:
-            raise Exception('Architecture undefined!')
+            net_decoder = SwiftNet(
+                num_class=num_class,
+                use_softmax=use_softmax)
 
         net_decoder.apply(ModelBuilder.weights_init)
         if len(weights) > 0:
@@ -375,13 +389,10 @@ class C1(nn.Module):
         conv5 = conv_out[-1]
         x = self.cbr(conv5)
         x = self.conv_last(x)
-
         if self.use_softmax: # is True during inference
             x = nn.functional.interpolate(
                 x, size=segSize, mode='bilinear', align_corners=False)
             x = nn.functional.softmax(x, dim=1)
-        else:
-            x = nn.functional.log_softmax(x, dim=1)
 
         return x
 
@@ -498,9 +509,9 @@ class PPMDeepsup(nn.Module):
 
 # upernet
 class UPerNet(nn.Module):
-    def __init__(self, num_class=150, fc_dim=4096,
+    def __init__(self, num_class=6, fc_dim=4096,
                  use_softmax=False, pool_scales=(1, 2, 3, 6),
-                 fpn_inplanes=(256, 512, 1024, 2048), fpn_dim=256):
+                 fpn_inplanes=(232, 464), fpn_dim=64):
         super(UPerNet, self).__init__()
         self.use_softmax = use_softmax
 
@@ -535,9 +546,8 @@ class UPerNet(nn.Module):
                 conv3x3_bn_relu(fpn_dim, fpn_dim, 1),
             ))
         self.fpn_out = nn.ModuleList(self.fpn_out)
-
         self.conv_last = nn.Sequential(
-            conv3x3_bn_relu(len(fpn_inplanes) * fpn_dim, fpn_dim, 1),
+            conv3x3_bn_relu(512, fpn_dim, 1),
             nn.Conv2d(fpn_dim, num_class, kernel_size=1)
         )
 
@@ -583,5 +593,122 @@ class UPerNet(nn.Module):
             return x
 
         x = nn.functional.log_softmax(x, dim=1)
+
+        return x
+
+upsample = lambda x, size: F.interpolate(x, size, mode='bilinear', align_corners=False)
+
+
+class SeparableConv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=1, stride=1, padding=0, dilation=1, bias=False):
+        super(SeparableConv2d, self).__init__()
+
+        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size, stride, padding, dilation, groups=in_channels,
+                               bias=bias)
+        self.pointwise = nn.Conv2d(in_channels, out_channels, 1, 1, 0, 1, 1, bias=bias)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.pointwise(x)
+        return x
+
+class _BNReluConv(nn.Sequential):
+    def __init__(self, num_maps_in, num_maps_out, k=3, batch_norm=True, bn_momentum=0.1, bias=False, dilation=1):
+        super(_BNReluConv, self).__init__()
+        if batch_norm:
+            self.add_module('norm', nn.BatchNorm2d(num_maps_in, momentum=bn_momentum))
+        self.add_module('relu', nn.ReLU(inplace=batch_norm is True))
+        padding = k // 2
+        self.add_module('conv', nn.Conv2d(num_maps_in, num_maps_out,
+                                          kernel_size=k, padding=padding, bias=bias, dilation=dilation))
+
+class _Upsample(nn.Module):
+    def __init__(self, num_maps_in, skip_maps_in, num_maps_out, use_bn=True, k=3):
+        super(_Upsample, self).__init__()
+        print(f'Upsample layer: in = {num_maps_in}, skip = {skip_maps_in}, out = {num_maps_out}')
+        self.bottleneck = _BNReluConv(skip_maps_in, num_maps_in, k=1, batch_norm=use_bn)
+        self.blend_conv = _BNReluConv(num_maps_in, num_maps_out, k=k, batch_norm=use_bn)
+
+    def forward(self, x, skip):
+        skip = self.bottleneck.forward(skip)
+        skip_size = skip.size()[2:4]
+        x = upsample(x, skip_size)
+        x = x + skip
+        x = self.blend_conv.forward(x)
+        return x
+
+class SpatialPyramidPooling(nn.Module):
+    def __init__(self, num_maps_in, num_levels, bt_size=512, level_size=128, out_size=128,
+                 grids=(6, 3, 2, 1), square_grid=False, bn_momentum=0.1):
+        super(SpatialPyramidPooling, self).__init__()
+        self.grids = grids
+        self.square_grid = square_grid
+        self.spp = nn.Sequential()
+        self.spp.add_module('spp_bn',
+                            _BNReluConv(num_maps_in, bt_size, k=1, bn_momentum=bn_momentum, batch_norm=True))
+        num_features = bt_size
+        final_size = num_features
+        for i in range(num_levels):
+            final_size += level_size
+            self.spp.add_module('spp' + str(i),
+                                _BNReluConv(num_features, level_size, k=1, bn_momentum=bn_momentum, batch_norm=True))
+        self.spp.add_module('spp_fuse',
+                            _BNReluConv(final_size, out_size, k=1, bn_momentum=bn_momentum, batch_norm=True))
+
+    def forward(self, x):
+        levels = []
+        target_size = x.size()[2:4]
+
+        ar = target_size[1] / target_size[0]
+
+        x = self.spp[0].forward(x)
+        levels.append(x)
+        num = len(self.spp) - 1
+
+        for i in range(1, num):
+            if not self.square_grid:
+                grid_size = (self.grids[i - 1], max(1, round(ar * self.grids[i - 1])))
+                x_pooled = F.adaptive_avg_pool2d(x, grid_size)
+            else:
+                x_pooled = F.adaptive_avg_pool2d(x, self.grids[i - 1])
+            level = self.spp[i].forward(x_pooled)
+
+            level = upsample(level, target_size)
+            levels.append(level)
+        x = torch.cat(levels, 1)
+        x = self.spp[-1].forward(x)
+        return x
+
+
+class SwiftNet(nn.Module):
+    def __init__(self, num_class=150, use_softmax=False):
+        super(SwiftNet, self).__init__()
+        self.use_softmax = use_softmax
+
+        upsamples = []
+        upsamples.append(_Upsample(128, 116, 128, k=3))
+        upsamples.append(_Upsample(128, 232, 128, k=3))
+
+        self.upsample = nn.ModuleList(list(reversed(upsamples)))
+        self.spp = SpatialPyramidPooling(464, 3, bt_size=6, level_size=42,
+                out_size=128, grids=(8, 4, 2, 1),
+                bn_momentum=0.01 / 2)
+        self.logits = _BNReluConv(128, 6, batch_norm=True, k=1, bias=True   )
+    def forward(self, conv_out, segSize=None):
+        last_conv = conv_out.pop()
+        conv_out.append(self.spp.forward(last_conv))
+        conv_out = conv_out[::-1]
+
+        x = conv_out[0]
+
+        for skip, up in zip(conv_out[1:], self.upsample):
+            x = up(x, skip)
+
+        x = self.logits(x)
+        
+        if self.use_softmax: # is True during inference
+            x = nn.functional.interpolate(
+                x, size=segSize, mode='bilinear', align_corners=False)
+            x = nn.functional.softmax(x, dim=1)
 
         return x

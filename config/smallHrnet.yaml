@@ -3,40 +3,40 @@ DATASET:
   list_train: "./data/training.odgt"
   list_val: "./data/validation.odgt"
   num_class: 6
-  imgSizes: (300, 400, 500, 600, 700)
+  imgSizes: (1000,)
   imgMaxSize: 6528
   padding_constant: 32
   segm_downsampling_rate: 4
   random_flip: True
 
 MODEL:
-  arch_encoder: "hrnetv2"
+  arch_encoder: "smallHrnetv2"
   arch_decoder: "c1"
-  fc_dim: 720
+  fc_dim: 270
 
 TRAIN:
-  batch_size_per_gpu: 2
-  num_epoch: 30
-  start_epoch: 21
-  epoch_iters: 13000
+  batch_size_per_gpu: 3
+  num_epoch: 20
+  start_epoch: 0
+  epoch_iters: 6500
   optim: "SGD"
-  lr_encoder: 0.01
-  lr_decoder: 0.01
+  lr_encoder: 0.001
+  lr_decoder: 0.001
   lr_pow: 0.9
   beta1: 0.9
-  weight_decay: 1e-4
+  weight_decay: 0.00001
   deep_sup_scale: 0.4
   fix_bn: True
   workers: 16
   disp_iter: 20
-  seed: 304
+  seed: 306
 
 VAL:
   visualize: False
-  checkpoint: "epoch_22.pth"
+  checkpoint: "epoch_9.pth"
 
 TEST:
   checkpoint: "epoch_22.pth"
   result: "./"
 
-DIR: "ckpt/ade20k-hrnetv2-c1"
+DIR: "ckpt/smallHrnetv2"

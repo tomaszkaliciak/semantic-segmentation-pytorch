@@ -10,11 +10,11 @@ import torch
 import torch.nn as nn
 # Our libs
 from config import cfg
-from dataset import TrainDataset
+from dataset1024cropp import TrainDataset
 from models import ModelBuilder, SegmentationModule
 from utils import AverageMeter, parse_devices, setup_logger
 from lib.nn import UserScatteredDataParallel, user_scattered_collate, patch_replication_callback
-from loss import CrossEntropy
+from loss2 import CrossEntropy
 
 # train one epoch
 def train(segmentation_module, iterator, optimizers, history, epoch, cfg):
@@ -151,6 +151,10 @@ def main(cfg, gpus):
         num_class=cfg.DATASET.num_class,
         weights=cfg.MODEL.weights_decoder)
 
+    print("DECODER")
+    print(net_decoder)
+    print("ENCODER")
+    print(net_encoder)
     crit = CrossEntropy()
 
     if cfg.MODEL.arch_decoder.endswith('deepsup'):

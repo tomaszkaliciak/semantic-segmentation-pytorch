@@ -137,20 +137,18 @@ class TrainDataset(BaseDataset):
         batch_records = self._get_sub_batch()
 
         # resize all images' short edges to the chosen size
-        if isinstance(self.imgSizes, list) or isinstance(self.imgSizes, tuple):
-            this_short_size = np.random.randint(min(self.imgSizes), max(self.imgSizes)+1)
-        else:
-            this_short_size = self.imgSizes
-
+        # if isinstance(self.imgSizes, list) or isinstance(self.imgSizes, tuple):
+        #     this_short_size = np.random.randint(min(self.imgSizes), max(self.imgSizes)+1)
+        # else:
+        #     this_short_size = self.imgSizes
+        this_short_size = (512,1024)
         # calculate the BATCH's height and width
         # since we concat more than one samples, the batch's h and w shall be larger than EACH sample
         batch_widths = np.zeros(self.batch_per_gpu, np.int32)
         batch_heights = np.zeros(self.batch_per_gpu, np.int32)
         for i in range(self.batch_per_gpu):
             img_height, img_width = batch_records[i]['height'], batch_records[i]['width']
-            this_scale = min(
-                this_short_size / min(img_height, img_width), \
-                self.imgMaxSize / max(img_height, img_width))
+            this_scale = (this_short_size[0]/ img_height, this_short_size[1]/ img_width)
             batch_widths[i] = img_width * this_scale
             batch_heights[i] = img_height * this_scale
 
@@ -225,9 +223,9 @@ class TrainDataset(BaseDataset):
 def mapToMainClass(mapillaryId):
     if mapillaryId in [24]:
         return 0
-    elif mapillaryId in [7, 13, 14, 43]:
+    elif mapillaryId in [13, 14, 43]:
         return 1
-    elif mapillaryId in [8, 11, 15, 23]:
+    elif mapillaryId in [7, 8, 11, 15, 23]:
         return 2
     elif mapillaryId in [19, 20, 21, 22, 59]:
         return 3
@@ -253,12 +251,13 @@ class ValDataset(BaseDataset):
         assert(img.size[1] == segm.size[1])
 
         ori_width, ori_height = img.size
+        newsize = (512,1024)
 
         img_resized_list = []
         for this_short_size in self.imgSizes:
             # calculate target height and width
-            scale = min(this_short_size / float(min(ori_height, ori_width)),
-                        self.imgMaxSize / float(max(ori_height, ori_width)))
+            scale1= newsize[0]/ori_height
+            scale2= newsize[0]/ori_width
             target_height, target_width = int(ori_height * scale), int(ori_width * scale)
 
             # to avoid rounding in network
