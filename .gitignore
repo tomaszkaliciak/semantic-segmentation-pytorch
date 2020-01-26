@@ -1,6 +1,5 @@
 *.pyc
 
-ckpt/
 vis/
 log/
 pretrained/
